@@ -298,7 +298,7 @@
     });
   });
 
-  // Google 試算表詢單系統
+    // Google 試算表詢單系統
   // 請將下方網址替換成 Google Apps Script 部署後的 Web App URL（以 /exec 結尾）。
   // 通知信箱請在 google-apps-script.gs 的 NOTIFY_EMAIL 設定，不需要寫在前端。
   const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwRvXeBonTTgYfr1jdzskxxYx9nRVlcANPIh-koY6Nmz_mvuWaSs9sQInE6ugeH1FHo/exec";
@@ -307,6 +307,11 @@
   const submitBtn = document.getElementById("submitBtn");
   const formStatus = document.getElementById("formStatus");
 
+  function showStatus(message, isError) {
+    formStatus.style.color = isError ? "#B85C5C" : "#64866B";
+    formStatus.textContent = message;
+  }
+
   inquiryForm.addEventListener("submit", async function(e) {
     e.preventDefault();
 
@@ -314,8 +319,7 @@
 
     if (!GOOGLE_SCRIPT_URL.startsWith("https://script.google.com/macros/s/") ||
         !GOOGLE_SCRIPT_URL.endsWith("/exec")) {
-      formStatus.style.color = "#B85C5C";
-      formStatus.textContent = "系統尚未設定完成，請先填入 Google Apps Script Web App URL。";
+      showStatus("系統尚未設定完成，請先填入 Google Apps Script Web App URL。", true);
       return;
     }
 
@@ -328,23 +332,46 @@
       params.append(key, value);
     }
 
+    // 超過 15 秒沒有回應就視為失敗
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+
     try {
-      // Google Apps Script Web App 使用表單編碼接收資料。
-      // no-cors 無法讀取伺服器回應，因此前端不能據此確認寫入／寄信是否成功。
-      await fetch(GOOGLE_SCRIPT_URL, {
+      // 使用表單編碼（URLSearchParams）送出，屬於「簡單請求」，不會觸發 CORS 預檢。
+      // 不使用 no-cors，才能讀取 Apps Script 的回覆，確認是否真的寫入成功。
+      // 注意：不要加 headers: {"Content-Type": "application/json"}，否則會被瀏覽器擋下。
+      const res = await fetch(GOOGLE_SCRIPT_URL, {
         method: "POST",
-        mode: "no-cors",
-        body: params
+        body: params,
+        signal: controller.signal
       });
 
-      formStatus.style.color = "#64866B";
-      formStatus.textContent = "已送出提交請求。由於瀏覽器無法讀取系統回覆，請以 Google 試算表及通知信確認是否成功登記。";
+      if (!res.ok) throw new Error("HTTP 錯誤：" + res.status);
+
+      // 讀取 Apps Script 的回覆（相容 {ok:true}、{status:"success"}、{result:"success"}）
+      const text = await res.text();
+      let result;
+      try {
+        result = JSON.parse(text);
+      } catch {
+        throw new Error("Apps Script 回傳的不是 JSON：" + text.slice(0, 100));
+      }
+
+      const success = result.ok === true || result.status === "success" || result.result === "success";
+      if (!success) throw new Error(result.error || result.message || "伺服器回報失敗");
+
+      showStatus("已收到你的詢問，我們會在 1 – 2 個工作天內回覆，謝謝！", false);
       inquiryForm.reset();
     } catch (error) {
       console.error("詢單提交錯誤：", error);
-      formStatus.style.color = "#B85C5C";
-      formStatus.textContent = "目前無法送出，請檢查網路連線或稍後再試。";
+      if (error.name === "AbortError") {
+        showStatus("系統回應逾時，請稍後再試，或改用 Email／Instagram 與我們聯絡。", true);
+      } else {
+        showStatus("送出失敗，請稍後再試，或改用 Email／Instagram 與我們聯絡。", true);
+      }
+      // 失敗時不清空表單，客戶不用重打一次
     } finally {
+      clearTimeout(timer);
       submitBtn.disabled = false;
       submitBtn.textContent = "送出拍攝詢問 →";
     }
